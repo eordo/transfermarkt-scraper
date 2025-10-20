@@ -1,3 +1,4 @@
+import logging
 import random
 import re
 import time
@@ -19,7 +20,7 @@ class TransfermarktScraper:
     _Q_LOANS = 'leihe'
     _Q_INTERNAL = 'intern'
 
-    def __init__(self, league='premier-league', timeout=30.0):
+    def __init__(self, league, timeout=30.0, enable_logging=False):
         """
         Initialize a TransfermarktScraper.
 
@@ -29,19 +30,31 @@ class TransfermarktScraper:
         Args:
             league (str): Name of the league.
             timeout (float): How long to wait for a response.
+            enable_logging (bool): Whether to print info log statements.
         """
         if league not in LEAGUE_CODES.keys():
             raise ValueError(f"{league} not found or is not supported.")
-        self._league = league
-        self._level = LEAGUE_CODES[league]
+        self.league = league
+        self.code = LEAGUE_CODES[league]
         self._origin = urljoin(
             BASE_URL,
-            f"{self._league}/transfers/wettbewerb/{self._level}"
+            f"{self.league}/transfers/wettbewerb/{self.code}"
         )
         self._client = httpx.Client(timeout=timeout)
+        # Set up console logging.
+        self.logger = logging.getLogger(f"[{self.code}]")
+        if enable_logging:
+            self.logger.setLevel(logging.INFO)
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter(
+            "%(asctime)s - %(name)s %(message)s",
+            "%H:%M:%S"
+        )
+        handler.setFormatter(formatter)
+        self.logger.addHandler(handler)
 
     def __str__(self):
-        return f"League: {self._league}, Code: {self._level}"
+        return f"League: {self.league}, Code: {self.code}"
 
     def clean(self, df):
         """
@@ -106,14 +119,14 @@ class TransfermarktScraper:
         player_name, player_id = zip(*df['player'])
         df['player'] = player_name
         df.rename(columns={'player': 'player_name'}, inplace=True)
-        df.insert(loc=5, column="player_id", value=player_id)
+        df.insert(loc=6, column="player_id", value=player_id)
 
         # Clean the market values and fees; impute loan status.
         df['market_value'] = df['market_value'].apply(_parse_currency)
         df['fee'], df['is_loan'] = zip(*df['fee'].map(_get_fee_and_loan_status))
 
         # Clean league name and window.
-        df['league'] = LEAGUE_NAMES[self._league]
+        df['league'] = LEAGUE_NAMES[self.league]
         df['window'] = df['window'].apply(
             lambda x: 'summer' if x == 's' else 'winter'
         )
@@ -128,6 +141,8 @@ class TransfermarktScraper:
         # summer/winter window.
         df.sort_values(['club', 'movement', 'window'], inplace=True)
 
+        self.logger.info(f"{df['season'].iloc[0]}: Cleaned all data.")
+
         return df
 
     def save(self, df, filename, destination='.'):
@@ -139,9 +154,11 @@ class TransfermarktScraper:
             filename (str): Name of CSV file without the extension.
             destination (pathlike): Where to save the data.
         """
-        output_dir = Path(destination) / self._league.replace('-', '_')
+        output_dir = Path(destination) / self.league.replace('-', '_')
         output_dir.mkdir(parents=True, exist_ok=True)
-        df.to_csv(output_dir / f"{filename}.csv", index=False, encoding='utf-8')
+        output_path = output_dir / f"{filename}.csv"
+        df.to_csv(output_path, index=False, encoding='utf-8')
+        self.logger.info(f"Data written to {output_path}.")
 
     def scrape(self, season, window, loans=True, internal=False, max_retries=5):
         """
@@ -161,9 +178,13 @@ class TransfermarktScraper:
         Returns:
             pd.DataFrame: Transfermarkt transfers data.
         """
+        self.logger.info((
+            f"{season}: "
+            f"Getting {'summer' if window == 's' else 'winter'} transfers..."
+        ))
         url = self._build_url(season, window, loans, internal)
         soup = self._get_page_soup(url, max_retries=max_retries)
-        df = self._soup_to_df(soup, window)
+        df = self._soup_to_df(soup, season, window)
         return df
 
     def _build_url(self, season, window, loans=True, internal=False):
@@ -211,21 +232,27 @@ class TransfermarktScraper:
                 soup = BeautifulSoup(response.text, "html.parser")
                 return soup
             except httpx.RequestError as e:
-                print(f"An error occurred while requesting {e.request.url}")
+                self.logger.info(
+                    f"An error occurred while requesting {e.request.url}"
+                )
             except httpx.HTTPStatusError as e:
-                print(f"Code {e.response.status_code} on {e.request.url}")
+                self.logger.info(
+                    f"Status code {e.response.status_code} on {e.request.url}"
+                )
             # Use exponential backoff with random delay to avoid soft blocking.
             sleep_time = random.uniform(2, 5) * (attempt + 1)
+            self.logger.info(f"Waiting {sleep_time} seconds to try again...")
             time.sleep(sleep_time)
         else:
             raise RuntimeError(f"All {max_retries} attempts failed for {url}")
 
-    def _soup_to_df(self, soup, window):
+    def _soup_to_df(self, soup, season, window):
         """
         Parse the soup of a Transfermarkt transfer window summary page.
 
         Args:
             soup (BeautifulSoup): Soup of the transfers page.
+            season (int): Year in which the league season begins.
             window (str): One of 's' (summer) or 'w' (winter).
 
         Returns:
@@ -287,8 +314,9 @@ class TransfermarktScraper:
                 table_data.append(transfer)
 
             df = pd.DataFrame(table_data, columns=col_headers)
-            df.insert(loc=0, column='league', value=self._league)
-            df.insert(loc=1, column='window', value=window)
+            df.insert(loc=0, column='season', value=season)
+            df.insert(loc=1, column='league', value=self.league)
+            df.insert(loc=2, column='window', value=window)
             # Tables alternate between transfers in and out that have
             # different headers.
             if i % 2 == 0:
@@ -315,8 +343,13 @@ class TransfermarktScraper:
         for club, df_in, df_out in zip(clubs, dfs_in, dfs_out):
             for df, movement in ((df_in, 'in'), (df_out, 'out')):
                 df.rename(columns=col_names, inplace=True)
-                df.insert(loc=1, column='club', value=club)
-                df.insert(loc=3, column='movement', value=movement)
+                df.insert(loc=2, column='club', value=club)
+                df.insert(loc=4, column='movement', value=movement)
                 dfs.append(df)
+
+        self.logger.info((
+            f"{season}: "
+            f"Parsing {'summer' if window == 's' else 'winter'} transfers."
+        ))
 
         return pd.concat(dfs)
