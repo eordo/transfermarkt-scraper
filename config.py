@@ -7,3 +7,4 @@ USER_AGENTS = [
 LEAGUE_CODES = {
     'premier-league': 'GB1'
 }
+LEAGUE_NAMES = {k: k.replace('-', ' ').title() for k in LEAGUE_CODES.keys()}

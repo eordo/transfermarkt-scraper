@@ -1,4 +1,5 @@
 import random
+import re
 import time
 from pathlib import Path
 from urllib.parse import urlencode, urljoin
@@ -7,7 +8,7 @@ import httpx
 import pandas as pd
 from bs4 import BeautifulSoup
 
-from config import BASE_URL, USER_AGENTS, LEAGUE_CODES
+from config import BASE_URL, USER_AGENTS, LEAGUE_CODES, LEAGUE_NAMES
 
 
 class TransfermarktScraper:
@@ -41,6 +42,93 @@ class TransfermarktScraper:
 
     def __str__(self):
         return f"League: {self._league}, Code: {self._level}"
+
+    def clean(self, df):
+        """
+        Clean a data frame of Transfermarkt transfers.
+
+        This function must be used on the unmodified output of `scrape`.
+
+        Args:
+            df (pd.DataFrame): Scraped Transfermarkt transfers data.
+
+        Returns:
+            pd.DataFrame: Cleaned data.
+        """
+
+        def _get_fee_and_loan_status(x):
+            """Parse transfer fee and impute player loan status."""
+            x = x.lower()
+            # Unknown/missing values.
+            if x in "-?":
+                fee = 0
+                is_loan = False
+            # Free transfers.
+            elif x == "free transfer":
+                fee = 0
+                is_loan = False
+            # Loans with no fee.
+            elif x == "loan transfer" or x.startswith("end of loan"):
+                fee = 0
+                is_loan = True
+            # Loans with a fee.
+            elif x.startswith("loan fee"):
+                fee = _parse_currency(x.split(':')[-1])
+                is_loan = True
+            # Transfers with a fee.
+            else:
+                fee = _parse_currency(x)
+                is_loan = False
+            return fee, is_loan
+
+        def _parse_currency(x):
+            """Convert a currency string to a numeric value."""
+            # '-' denotes a missing value.
+            if x == '-':
+                return None
+            # Drop the currency symbol and split the string into the numeric
+            # amount and multiplier.
+            tokens = re.findall(r'[0-9.]+|[^0-9.]', x[1:])
+            # If there is no multiplier, e.g., the original string was
+            # "€1000", then the only token is the numeric value.
+            if len(tokens) == 1:
+                value = float(tokens[0])
+            else:
+                multipliers = {
+                    'm': 1_000_000,
+                    'k': 1_000
+                }
+                amount, power = float(tokens[0]), tokens[1]
+                value = amount * multipliers[power]
+            return value
+
+        # Separate player names and IDs.
+        player_name, player_id = zip(*df['player'])
+        df['player'] = player_name
+        df.rename(columns={'player': 'player_name'}, inplace=True)
+        df.insert(loc=5, column="player_id", value=player_id)
+
+        # Clean the market values and fees; impute loan status.
+        df['market_value'] = df['market_value'].apply(_parse_currency)
+        df['fee'], df['is_loan'] = zip(*df['fee'].map(_get_fee_and_loan_status))
+
+        # Clean league name and window.
+        df['league'] = LEAGUE_NAMES[self._league]
+        df['window'] = df['window'].apply(
+            lambda x: 'summer' if x == 's' else 'winter'
+        )
+
+        # Convert ID and age from strings to ints.
+        for col in ('player_id', 'age'):
+            df[col] = df[col].astype(int)
+        # Convert bools to ints.
+        df['is_loan'] = df['is_loan'].astype(int)
+
+        # Sort the data alphabetically by club, then transfers in/out, then
+        # summer/winter window.
+        df.sort_values(['club', 'movement', 'window'], inplace=True)
+
+        return df
 
     def save(self, df, filename, destination='.'):
         """
