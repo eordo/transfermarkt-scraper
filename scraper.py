@@ -74,7 +74,7 @@ class TransfermarktScraper:
             x = x.lower()
             # Unknown/missing values.
             if x in "-?":
-                fee = 0
+                fee = None
                 is_loan = False
             # Free transfers.
             elif x == "free transfer":
@@ -97,7 +97,7 @@ class TransfermarktScraper:
         def _parse_currency(x):
             """Convert a currency string to a numeric value."""
             # '-' denotes a missing value.
-            if x == '-':
+            if not x or x == '-':
                 return None
             # Drop the currency symbol and split the string into the numeric
             # amount and multiplier.
@@ -133,7 +133,8 @@ class TransfermarktScraper:
 
         # Convert ID and age from strings to ints.
         for col in ('player_id', 'age'):
-            df[col] = df[col].astype(int)
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+            df[col] = df[col].astype('Int64')
         # Convert bools to ints.
         df['is_loan'] = df['is_loan'].astype(int)
 
@@ -285,7 +286,7 @@ class TransfermarktScraper:
 
         def _parse_from_img(x):
             img = x.find('img') if x else None
-            return img.get('title') if img else None
+            return img.get('alt') if img else None
 
         parse_col_index = {
             0: _parse_player_name_and_id,
