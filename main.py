@@ -1,13 +1,17 @@
 import pandas as pd
+from config import LEAGUE_CODES
 from scraper import TransfermarktScraper
 
 
 def main():
     data_dir = "data"
-    tm = TransfermarktScraper(league='premier-league', enable_logging=True)
-    df = pd.concat([tm.scrape(2025, 's'), tm.scrape(2025, 'w')])
-    df = tm.clean(df)
-    tm.save(df, filename='2025', destination=data_dir)
+    for league in LEAGUE_CODES.keys():
+        tm = TransfermarktScraper(league=league, enable_logging=True)
+        for season in range(1992, 2025):
+            df = pd.concat([tm.scrape(season, 's'), tm.scrape(season, 'w')])
+            df = tm.clean(df)
+            tm.save(df, filename=str(season), destination=data_dir)
+    print("Done!")
 
 if __name__ == "__main__":
     main()
