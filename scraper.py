@@ -76,8 +76,8 @@ class TransfermarktScraper:
             if x in "-?":
                 fee = None
                 is_loan = False
-            # Free transfers.
-            elif x == "free transfer":
+            # Free transfers and drafts.
+            elif x == "free transfer" or x == "draft":
                 fee = 0
                 is_loan = False
             # Loans with no fee.
@@ -99,6 +99,8 @@ class TransfermarktScraper:
             # '-' denotes a missing value.
             if not x or x == '-':
                 return None
+            if x.isdigit():
+                return float(x)
             # Drop the currency symbol and split the string into the numeric
             # amount and multiplier.
             tokens = re.findall(r'[0-9.]+|[^0-9.]', x[1:])
@@ -201,7 +203,7 @@ class TransfermarktScraper:
         Returns:
             str: Transfermarkt URL.
         """
-        if not float(season).is_integer():
+        if not isinstance(season, int):
             raise ValueError("Season must be a year.")
         if window not in ('s', 'w'):
             raise ValueError("Window must be one of 's' or 'w'.")

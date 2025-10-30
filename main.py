@@ -63,6 +63,7 @@ def main():
         if selected_seasons: break
         print("Please select at least one season.")
 
+    # Confirm choices.
     print("\nThe following league(s) will be scraped:")
     print(', '.join([LEAGUE_NAMES[league] for league in selected_leagues]))
     print("\nFor the following season(s):")
@@ -76,13 +77,29 @@ def main():
         f"\nNow scraping {len(selected_seasons)} season(s) "
         f"for {len(selected_leagues)} league(s)."
     ))
+    # For each league, record any season that fails to scrape.
+    failed_scrapes = {league: [] for league in selected_leagues}
     for league in selected_leagues:
         tm = TransfermarktScraper(league=league, enable_logging=True)
         for season in selected_seasons:
-            df = pd.concat([tm.scrape(season, 's'), tm.scrape(season, 'w')])
-            df = tm.clean(df)
-            tm.save(df, filename=str(season), destination=data_dir)
-    print("Done!")
+            try:
+                df = pd.concat([
+                    tm.scrape(season, 's'),
+                    tm.scrape(season, 'w')
+                ])
+                df = tm.clean(df)
+                tm.save(df, filename=str(season), destination=data_dir)
+            except Exception as e:
+                tm.logger.error(f"Failed to scrape {season}: {e}")
+                failed_scrapes[league].append(season)
+
+    # Print unsuccessful scrapes, if any.
+    if any(failed_scrapes.values()):
+        print("\nThe following scrape(s) failed:")
+        for league, seasons in failed_scrapes.items():
+            if not seasons: continue
+            print(f"{LEAGUE_NAMES[league]}: {seasons}")
+    print("\nDone!")
 
 if __name__ == "__main__":
     main()
